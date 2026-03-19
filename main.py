@@ -2,11 +2,9 @@ import sys
 import os
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-import sys, os
 _root = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _root)
-sys.path.insert(0, os.path.join(_root, "tool"))
-from crew.test_crew import run_crew
+from tool.graph.test_graph import run_graph
 
 def main():
     print("\n🤖 AI Automation Test Generator")
@@ -32,7 +30,7 @@ def main():
     
 
     print("\n🚀 Starting AI agents...\n")
-    result = run_crew(url, requirements)
+    result = run_graph(url, requirements)
 
     print("\n✅ Done! Check the output/ folder:")
     print("  📄 output/locators.py")
@@ -40,5 +38,26 @@ def main():
     print("  📄 output/login.feature")
     print("  📄 output/steps/login_steps.py")
 
+def heal():
+    from tool.graph.healer import run_healer_sync
+
+    print("\n── HEAL MODE ───────────────────────────────")
+
+    url = input("\n🌐 Enter the URL to verify locators against: ").strip()
+    if not url:
+        print("⚠️  No URL entered.")
+        return
+
+    locators_file = input(
+        "📄 Locators file path (press Enter for default 'output/locators.py'): "
+    ).strip()
+
+    if not locators_file:
+        locators_file = "output/locators.py"
+
+    run_healer_sync(url, locators_file)
+
+
 if __name__ == "__main__":
     main()
+
