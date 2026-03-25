@@ -3,8 +3,9 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-from langchain_ollama import ChatOllama
 from langchain_core.messages import HumanMessage, SystemMessage
+
+from tool.graph.llm_factory import build_chat_llm
 
 
 @dataclass(frozen=True)
@@ -18,8 +19,11 @@ def _clean(text: str) -> str:
     return text.strip().strip('"\'`').strip()
 
 
-def _llm(cfg: HealerConfig) -> ChatOllama:
-    return ChatOllama(model=cfg.ollama_model, base_url=cfg.ollama_base_url, temperature=0)
+def _llm(cfg: HealerConfig):
+    return build_chat_llm(
+        ollama_model=cfg.ollama_model,
+        ollama_base_url=cfg.ollama_base_url,
+    )
 
 
 async def run_healer(url: str, locators_file: str = "output/locators.py", cfg: HealerConfig | None = None):

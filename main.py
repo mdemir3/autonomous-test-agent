@@ -31,6 +31,9 @@ def main():
 
     print("\n🚀 Starting AI agents...\n")
     result = run_graph(url, requirements)
+    if isinstance(result, dict) and result.get("validation_error"):
+        print("\n⚠️  Behave dry-run still failing after auto-repair.")
+        print(result["validation_error"])
 
     print("\n✅ Done! Check the output/ folder:")
     print("  📄 output/locators.py")
