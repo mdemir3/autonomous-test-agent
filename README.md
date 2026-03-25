@@ -2,6 +2,47 @@
 
 A small Python project that uses **LangGraph** + **LangChain** chat models to generate BDD-style test artifacts from a URL and free-text requirements: locators, test cases, a **Behave** `.feature` file, and Playwright-based step definitions under `output/`.
 
+## Architecture
+
+`main.py` calls `run_graph()` in `tool/graph/test_graph.py`. Each node is a **single LLM-assisted step** (same chat model from `tool/graph/llm_factory.py`: Ollama, OpenAI, or Anthropic). The graph runs **sequentially**; state carries URL, requirements, and generated text between nodes.
+
+```mermaid
+flowchart TB
+    subgraph inputs["Inputs"]
+        URL["URL"]
+        REQ["Requirements text"]
+    end
+
+    subgraph graph["LangGraph — tool/graph/test_graph.py"]
+        INIT["init\n(page name, locator class name)"]
+        SCAN["scan\nLLM: expected page elements"]
+        LOC["locators\nLLM writes locators file"]
+        TC["test_cases\nLLM writes test_cases.md"]
+        FEAT["feature\nLLM writes .feature"]
+        STEPS["steps\nLLM writes steps/*.py"]
+        VAL["validate\nbehave --dry-run + repair loop"]
+    end
+
+    subgraph outputs["output/"]
+        O1["page_locators.py"]
+        O2["page_test_cases.md"]
+        O3["page.feature"]
+        O4["steps/page_steps.py"]
+    end
+
+    URL --> INIT
+    REQ --> INIT
+    INIT --> SCAN --> LOC --> TC --> FEAT --> STEPS --> VAL
+    LOC --> O1
+    TC --> O2
+    FEAT --> O3
+    STEPS --> O4
+    VAL -.->|"rewrite if needed"| FEAT
+    VAL -.->|"rewrite if needed"| STEPS
+```
+
+**Optional healer** (`tool/graph/healer.py`) is a separate path: it verifies locators against a live URL via `mcp_servers/mcp_healer.py` and uses the **same LLM** to propose fixed selectors.
+
 ## Prerequisites
 
 - **Python 3.12+**
