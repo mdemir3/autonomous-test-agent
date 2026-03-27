@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass
 
@@ -17,6 +18,23 @@ class HealerConfig:
 def _clean(text: str) -> str:
     text = re.sub(r"```.*?```", "", text, flags=re.DOTALL)
     return text.strip().strip('"\'`').strip()
+
+
+def _json_or_none(text: str):
+    """Best-effort JSON extraction from model output."""
+    cleaned = _clean(text)
+    try:
+        return json.loads(cleaned)
+    except Exception:
+        pass
+    # Try extracting first JSON object block
+    m = re.search(r"\{.*\}", cleaned, flags=re.DOTALL)
+    if not m:
+        return None
+    try:
+        return json.loads(m.group(0))
+    except Exception:
+        return None
 
 
 def _llm(cfg: HealerConfig):
@@ -66,8 +84,8 @@ async def run_healer(url: str, locators_file: str = "output/locators.py", cfg: H
         candidates = await scan_page_for_healing(url, locator_name)
 
         system = (
-            "You are an expert automation engineer specializing in stable selectors. "
-            "Return ONLY the new selector string, nothing else."
+            "You are a QA healing classifier. Decide whether this is safe to auto-heal "
+            "or likely a product bug/spec drift. Return JSON only."
         )
         human = f"""
 The locator '{locator_name}' with selector '{broken_selector}' is broken.
@@ -75,15 +93,46 @@ The locator '{locator_name}' with selector '{broken_selector}' is broken.
 Here are all available elements on the page:
 {candidates}
 
-Pick the most stable selector using priority:
-data-testid > id > name > placeholder > aria-label > css class > xpath
+Rules:
+- Prefer semantic match to locator intent (name/text/type/purpose), not only existence.
+- If no strong semantic match exists, classify as potential_bug.
+- If there is a strong match, propose the best stable selector with priority:
+  data-testid > id > name > placeholder > aria-label > css class > xpath
 
-Output example: input[name='username']
+Return strict JSON with this schema:
+{{
+  "decision": "safe_heal" | "potential_bug",
+  "confidence": 0.0-1.0,
+  "reason": "short rationale",
+  "new_selector": "selector or empty string",
+  "risk_note": "what could still go wrong"
+}}
 """.strip()
         resp = llm.invoke([SystemMessage(content=system), HumanMessage(content=human)])
-        new_selector = _clean(getattr(resp, "content", str(resp)))
-        print(f"   🤖 AI suggests: '{new_selector}'")
+        parsed = _json_or_none(getattr(resp, "content", str(resp)))
 
+        if not isinstance(parsed, dict):
+            print("   ⚠️ Could not parse classifier output. Marking as potential_bug.")
+            print("   decision=potential_bug confidence=0.0 reason=parse_error")
+            continue
+
+        decision = str(parsed.get("decision", "potential_bug")).strip().lower()
+        confidence = parsed.get("confidence", 0.0)
+        reason = str(parsed.get("reason", "")).strip()
+        risk_note = str(parsed.get("risk_note", "")).strip()
+        new_selector = str(parsed.get("new_selector", "")).strip()
+
+        print(f"   🧠 decision={decision} confidence={confidence}")
+        if reason:
+            print(f"   reason: {reason}")
+        if risk_note:
+            print(f"   risk: {risk_note}")
+
+        if decision != "safe_heal" or not new_selector:
+            print("   🚫 Not auto-healing; classify as potential product bug/spec drift.")
+            continue
+
+        print(f"   🤖 applying selector: '{new_selector}'")
         fix_result = await update_locator(locators_file, locator_name, new_selector)
         print(f"   {fix_result}")
 

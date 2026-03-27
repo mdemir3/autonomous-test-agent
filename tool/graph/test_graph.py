@@ -94,6 +94,86 @@ def _needs_repair(behave_output: str) -> bool:
     return any(m in behave_output for m in markers)
 
 
+def _validate_locators(content: str, class_name: str) -> tuple[bool, str]:
+    if f"class {class_name}:" not in content:
+        return False, f"Missing class header: class {class_name}:"
+    consts = re.findall(r"^\s*[A-Z][A-Z0-9_]*\s*=\s*['\"].+['\"]\s*$", content, flags=re.MULTILINE)
+    if not consts:
+        return False, "No UPPER_SNAKE_CASE locator constants found."
+    return True, ""
+
+
+def _validate_feature(content: str) -> tuple[bool, str]:
+    lines = content.splitlines()
+    feature_count = sum(1 for l in lines if l.strip().startswith("Feature:"))
+    if feature_count != 1:
+        return False, f"Expected exactly one Feature header, found {feature_count}."
+    # Background cannot be tagged: previous non-empty line before Background cannot start with @
+    for i, line in enumerate(lines):
+        if line.lstrip().startswith("Background:"):
+            j = i - 1
+            while j >= 0 and lines[j].strip() == "":
+                j -= 1
+            if j >= 0 and lines[j].strip().startswith("@"):
+                return False, "Background is tagged; tags above Background are invalid."
+    # Disallow curly-brace placeholders in feature steps
+    if re.search(r"\{[A-Za-z_][A-Za-z0-9_]*\}", content):
+        return False, "Feature contains {param}; use <param> in Scenario Outline."
+    return True, ""
+
+
+def _validate_steps(content: str) -> tuple[bool, str]:
+    required = [
+        "from behave import given, when, then",
+        "from playwright.sync_api import sync_playwright, expect",
+        "def before_scenario(context, scenario):",
+        "def after_scenario(context, scenario):",
+    ]
+    for marker in required:
+        if marker not in content:
+            return False, f"Missing required steps marker: {marker}"
+    banned = ["from behave import async_setup", "from playwright.sync_api import expect, context, page"]
+    for marker in banned:
+        if marker in content:
+            return False, f"Banned import found: {marker}"
+    # Duplicate decorator pattern check
+    pats = re.findall(r"@(?:given|when|then)\((['\"])(.*?)\1\)", content)
+    only_patterns = [p[1] for p in pats]
+    dupes = {p for p in only_patterns if only_patterns.count(p) > 1}
+    if dupes:
+        return False, f"Duplicate step patterns found: {sorted(dupes)[:3]}"
+    return True, ""
+
+
+def _invoke_with_schema(
+    llm,
+    *,
+    system: str,
+    human: str,
+    validator,
+    max_attempts: int = 3,
+) -> str:
+    """
+    Generate with retries. If schema validation fails, ask model to regenerate
+    with the exact violation reason.
+    """
+    prompt = human
+    last = ""
+    for _ in range(max_attempts):
+        out = _invoke(llm, system, prompt)
+        ok, reason = validator(out)
+        if ok:
+            return out
+        last = out
+        prompt = (
+            human
+            + "\n\nVALIDATION FAILED. Regenerate from scratch and follow format strictly.\n"
+            + f"Violation: {reason}\n"
+            + "Return only the requested artifact content.\n"
+        )
+    return last
+
+
 def build_graph(cfg: GraphConfig) -> Any:
     llm = _llm(cfg)
 
@@ -152,7 +232,12 @@ Rules:
 - Use Playwright locator strings.
 - Group by element type with comments.
 """.strip()
-        content = _invoke(llm, system, human)
+        content = _invoke_with_schema(
+            llm,
+            system=system,
+            human=human,
+            validator=lambda c: _validate_locators(c, state["class_name"]),
+        )
         out_path = f"output/{state['page_name']}_locators.py"
         _write(out_path, content)
         return {**state, "locators": content}
@@ -177,7 +262,12 @@ For each test case include:
 
 Cover happy path, negative scenarios, edge cases, and boundaries.
 """.strip()
-        content = _invoke(llm, system, human)
+        content = _invoke_with_schema(
+            llm,
+            system=system,
+            human=human,
+            validator=_validate_feature,
+        )
         out_path = f"output/{state['page_name']}_test_cases.md"
         _write(out_path, content)
         return {**state, "test_cases": content}
@@ -312,7 +402,12 @@ def step_open_page(context):
 Feature file content:
 {state['feature']}
 """.strip()
-        content = _invoke(llm, system, human)
+        content = _invoke_with_schema(
+            llm,
+            system=system,
+            human=human,
+            validator=_validate_steps,
+        )
         out_path = f"output/steps/{state['page_name']}_steps.py"
         _write(out_path, content)
         return {**state, "steps": content}
